@@ -1,0 +1,5 @@
+{
+  "global": {
+    "cmd-r": "mod.open:agent-restart"
+  }
+}

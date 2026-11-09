@@ -1,0 +1,4 @@
+# Written by the Herdr app into every mod folder
+jsconfig.json
+*.d.ts
+.DS_Store

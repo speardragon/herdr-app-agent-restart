@@ -1,0 +1,124 @@
+# Agent Restart
+
+Press `cmd+r` on a Claude Code or Codex agent that is waiting for input. A small
+window opens and shows each step. The agent exits, and the same session resumes in the
+same terminal (`claude --resume <id>`, `codex resume --no-daemon <id>`). The window then
+closes, and the keyboard goes back to that terminal. If a check fails, the window keeps
+the reason until you press any key. Use it when an agent's screen breaks (for example,
+after you connect or disconnect a monitor) or when an agent needs a restart to update.
+
+The idea comes from the Herdr plugin
+[hmu332233/herdr-agent-restart](https://github.com/hmu332233/herdr-agent-restart).
+This mod is a new build for the Herdr app.
+
+![Agent Restart](preview.png)
+
+## What you see
+
+- One window, 420×132 px, centered over the layout (`mod.json` overlay `kind: "window"`).
+  It has the `popover` background, an 8 px radius, 16 px padding, and a 10 px gap
+  between rows. Text is 13 px.
+- **Header row** (8 px gap):
+  - While it runs: a braille spinner (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`, 90 ms per frame) in the `working` color.
+  - After a failure: a semibold `!` in the `blocked` color.
+  - The title "Agent Restart", 14 px, semibold, `foreground`.
+  - After a failure only: "Any key closes", 11 px, `dim`, on the right.
+- **Body**: one line that scrolls if it is long.
+  - While it runs: the step in `muted`: "Checking the agent…", "Stopping Claude…",
+    "Resuming Claude…" ("Codex" for Codex).
+  - After a failure: the reason in `foreground`.
+- **Close button** (after a failure only), bottom right: 28 px high, 12 px side padding,
+  6 px radius, 1 px `input` border, `raised` background, 12 px text, 0.88 opacity on hover.
+
+## How it behaves
+
+- `cmd+r` runs `mod.open:agent-restart` on the focused terminal. Pressing `cmd+r` again
+  while the window is open closes the window and cancels the restart.
+- Agent status decides what happens:
+  - `idle` and `done` (idle that nobody has looked at yet): it restarts the agent.
+  - `working`, `blocked`, `error`: it refuses ("Claude is working, not idle.").
+- These checks all pass before the first key goes to the terminal. If one fails, the
+  terminal gets no input:
+  1. A terminal is focused, and it is on this computer (not `machine/t7`).
+  2. The terminal reports an agent, and the agent is Claude Code or Codex.
+  3. The status is `idle` or `done`.
+  4. The terminal's own program is a shell (`argv[0]`). If the agent is the terminal's
+     own program, exiting it closes the pane.
+  5. The agent is in the foreground (`foreground.pid` is not the shell's `pid`).
+  6. The session ID is found and is a UUID.
+- Then it presses `esc` once. Then it reads the terminal every 400 ms and presses `ctrl+c`
+  until the shell is back in the foreground (`foreground.pid === pid`). It stops after
+  5 seconds and sends no resume command.
+- Then it types the resume command at the shell prompt and presses Enter (`hc send`).
+- Success: the window closes and focuses the terminal (`pane.focus {terminal}`).
+- Failure: the window stays. Any key or the Close button closes it and focuses the terminal.
+- While it runs, the window holds the keyboard. Keys go nowhere, and `Esc` does not close it.
+
+## Built from
+
+- `mods/agent-restart/`, opened by `mod.open` (no layout block, `"place": "none"`):
+  - `main.js`: the window. In `init` it reads `focused()` (`shown ?? terminal`) before it
+    takes the keyboard (`cx.focus_handle()`), then runs the restart in `cx.spawn`.
+  - `restart.js`: the checks, the stop loop and the resume. It imports nothing from
+    `herdr`, so `node --test` can test it with fake I/O.
+  - `sessions.js`: finds the session ID.
+  - `agents.js`: the agents, keyed by the app name they report (`status.app`):
+    `claude-code` and `codex`.
+  - `ops.js`: the real I/O, through `hc`, `exec`, `readTextFile` and `home`.
+  - `test/restart.test.mjs`: 13 unit tests.
+- `herdr` functions: `focused`, `props`, `closeOverlay`, `run("pane.focus")`, `theme`,
+  `hc`, `exec`, `readTextFile`, `home`. From `gpui-kit`: `View`, `div`, `.frames`.
+  From `gpui-base`: `v_flex`, `h_flex`.
+- `hc` commands: `hc get <t> --json`, `hc keys <t> esc`, `hc keys <t> ctrl+c`,
+  `hc send <t> "<resume command>"`.
+- How it finds the session ID:
+  - **Claude Code** writes `~/.claude/sessions/<pid>.json` while it runs. The mod reads
+    `sessionId` for the foreground pid. The record's `pid` must match, and its `procStart`
+    must equal `env LC_ALL=C TZ=UTC ps -o lstart= -p <pid>`, so a stale record with a
+    reused pid is refused.
+  - **Codex**: `lsof -nP -p <pid> -Fn`. Exactly one open `…/sessions/…rollout-…-<uuid>.jsonl`
+    gives the ID. Several are refused. With none, the first UUID after `resume` in the
+    process argv (`codex resume <uuid>`) gives the ID. Otherwise it is refused.
+- Keys: `keys.json` binds `cmd-r` in `global`.
+- No art, no network.
+
+## Watch out
+
+- **The mod runs programs and reads files outside its folder.** It runs `hc`, `ps` and
+  `lsof`, and it reads `~/.claude/sessions/`. It never reads the `.key` files there.
+- Don't name a method `close` on the exported `View`. Herdr calls `close(cx)` when the
+  overlay goes. This build uses `dismiss`.
+- Use `kind: "window"`. A popup or a dialog closes on `Esc` or on a click beside it, and a
+  closed overlay cancels the mod's task. That can happen after the agent stops and before
+  the resume command.
+- Read `focused()` in `init`, before the mod focuses itself.
+- "The agent exited" means the shell is back in the foreground: `foreground.pid === pid`.
+  At a shell prompt the two are equal; while a command runs they differ.
+- `procStart` matches `ps -o lstart` only in the C locale and UTC.
+- The session ID goes into a shell command line. Accept only a UUID.
+- **Codex in daemon mode is refused.** The shared Codex daemon holds the rollout file, and
+  the Codex TUI process holds none, so nothing ties the terminal to its session. Start
+  Codex with `--no-daemon` (`hc --skill`: Codex must run with it). The resume command
+  adds `--no-daemon`.
+- Only the session ID comes back (and `--no-daemon` for Codex). Other CLI options (model,
+  permission mode, extra folders, inline env vars) do not. A draft in the input box is lost.
+- Grok, Agy and other agents are not supported. No source ties their process to a session
+  without guessing. To add one, add an entry to `agents.js` with a `findSession` that
+  does not guess.
+- Local terminals only.
+- Tested on macOS only (`ps -o lstart`, `lsof`).
+- Not tested in the app: the Codex `lsof` path, and resuming with `--no-daemon` a session
+  that a daemon-mode Codex started (the `codex resume <uuid>` argv path).
+
+## Done when
+
+- `herdr-app check ~/.config/herdr-app/mods/agent-restart` passes.
+- `node --test` in `mods/agent-restart` passes: 13 tests.
+- `cmd+r` on an idle Claude Code pane: the window shows "Stopping Claude…", Claude exits,
+  `claude --resume <id>` runs in the same terminal, the same conversation opens again, and
+  the window closes.
+- The checks, run on live terminals without sending keys:
+  - Idle or done Claude: the session ID is found. Claude's record for a running
+    conversation holds that conversation's ID.
+  - Working Claude: "Claude is working, not idle."
+  - Daemon-mode Codex: "Codex did not show its session ID. Start Codex with --no-daemon, then try again."
