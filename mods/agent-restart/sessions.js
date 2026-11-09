@@ -56,14 +56,58 @@ export function argvResumeId(argv) {
   return list.slice(at + 1).find((arg) => UUID.test(arg)) ?? null;
 }
 
-// Codex started with --no-daemon writes its own rollout file; a daemon-mode Codex
-// leaves that to the shared daemon, so only a `codex resume <id>` command line names it.
-export async function codexSession(term, ops) {
+// Before Codex stops: its mode, and any ID it shows. Codex started with --no-daemon
+// holds its own rollout file open. A daemon-mode Codex leaves that to the shared daemon,
+// which keeps the session after Codex exits; Codex then prints the reconnect command,
+// so its ID can wait until then. Without a daemon, the ID must be known now.
+export async function codexPrepare(term, ops) {
   const { pid, argv } = term.foreground;
   const open = await ops.exec("lsof", ["-nP", "-p", String(pid), "-Fn"]);
   const ids = rolloutIds(open.stdout);
   if (ids.length > 1) throw new Error("Codex has several sessions open. Restart it by hand.");
+  const noDaemon = ids.length === 1 || (Array.isArray(argv) && argv.includes("--no-daemon"));
   const id = ids[0] ?? argvResumeId(argv);
-  if (!id) throw new Error("Codex did not show its session ID. Start Codex with --no-daemon, then try again.");
-  return requireSessionId(id, "Codex");
+  if (noDaemon && !id) throw new Error("Codex (--no-daemon) did not show its session ID. Restart it by hand.");
+  return { id: id ? requireSessionId(id, "Codex") : null, noDaemon };
+}
+
+const RECONNECT = "To reconnect, run:";
+const RESUME_LINE = new RegExp(`^codex resume (${UUID_PATTERN})$`, "i");
+// Codex's own lines after the command; anything else must be the new shell prompt.
+const CODEX_TAIL = [/^Stop the current turn/i, /^Token usage/i];
+const MAX_PROMPT_LINES = 3;
+
+// What a daemon-mode Codex prints when it disconnects:
+//   To reconnect, run:
+//     codex resume <uuid>
+// Only the newest one counts, and only right above the prompt: an older exit would be
+// followed by the command that started Codex again, which mentions codex.
+export function exitMessageId(screen) {
+  const lines = String(screen ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  let at = lines.length - 1;
+  while (at >= 0 && !RESUME_LINE.test(lines[at])) at -= 1;
+  if (at < 1 || lines[at - 1] !== RECONNECT) return null;
+  const prompt = lines.slice(at + 1).filter((line) => !CODEX_TAIL.some((re) => re.test(line)));
+  if (prompt.length > MAX_PROMPT_LINES || prompt.some((line) => /\bcodex\b/i.test(line))) return null;
+  return RESUME_LINE.exec(lines[at])[1].toLowerCase();
+}
+
+// About 2 seconds for the shell screen to show what Codex printed.
+export const SCREEN_READS = 8;
+export const SCREEN_RETRY_MS = 250;
+
+// After Codex stops: what it printed wins, since the session may have changed inside
+// Codex. Without it, only a --no-daemon Codex falls back to the ID it showed before.
+export async function codexConfirm(address, plan, ops) {
+  for (let read = 0; read < SCREEN_READS; read += 1) {
+    if (read > 0) await ops.sleep(SCREEN_RETRY_MS);
+    const printed = exitMessageId(await ops.readScreen(address));
+    if (printed) return printed;
+  }
+  if (plan.noDaemon && plan.id) return plan.id;
+  const before = plan.id ? ` Before it stopped, Codex showed ${plan.id}; compare it with the screen.` : "";
+  throw new Error(`Codex exited, but its reconnect command was not on the screen. No resume command was sent. Run the codex resume command that Codex printed.${before}`);
 }

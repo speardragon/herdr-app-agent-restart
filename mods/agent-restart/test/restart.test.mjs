@@ -2,32 +2,54 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { checkTarget, checkTerminal, restartAgent, MAX_POLLS } from "../restart.js";
-import { argvResumeId, claudeSession, codexSession, rolloutIds } from "../sessions.js";
+import { argvResumeId, claudeSession, codexConfirm, codexPrepare, exitMessageId, rolloutIds } from "../sessions.js";
 
 const CLAUDE_ID = "9555879a-c76f-47c9-b2f1-1b058d2870e6";
 const CODEX_ID = "01a1be1c-1936-78a0-afe1-572570b8abc9";
+const OTHER_ID = "01a1be20-0136-74b1-ad7b-e045d5339d62";
 const PROC_START = "Mon Nov  9 01:39:35 2026";
+
+// What a daemon-mode Codex prints when ctrl+c disconnects it, then the shell prompt.
+function exitScreen(id = CODEX_ID, after = ["❯"]) {
+  return [
+    "some earlier shell output",
+    "Disconnected from this task. Any running work continues.",
+    "To reconnect, run:",
+    `  codex resume ${id}`,
+    "Stop the current turn: run codex agents, select this task, and press x.",
+    "Token usage so far: total=287,373 input=262,511 (+ 16,593,536 cached) output=24,862 (reasoning 5,720)",
+    ...after,
+    "",
+    "",
+  ].join("\n");
+}
 
 // The shape `hc get <t> --json` prints, trimmed to what the mod reads.
 function terminal({ app = "claude-code", state = "idle", argv = ["/bin/zsh", "-l"], fg = { pid: 200, argv: ["claude"] }, live = "live" } = {}) {
   return { address: "t1", pid: 100, argv, state: live, status: app ? { app, state } : null, foreground: fg };
 }
 
+const codexTerminal = (fgArgv) => terminal({ app: "codex", fg: { pid: 200, argv: fgArgv } });
 const atPrompt = (term) => ({ ...term, foreground: { pid: term.pid, argv: ["/bin/zsh", "-l"] } });
+const rollout = (id) => `n/Users/me/.codex/sessions/2026/11/09/rollout-2026-11-09T11-21-15-${id}.jsonl`;
 
 function claudeRecord(overrides = {}) {
   return JSON.stringify({ pid: 200, sessionId: CLAUDE_ID, procStart: PROC_START, ...overrides });
 }
 
-// Fake I/O: `terminals` are what successive `hc get` calls return (the last one repeats).
-function harness({ terminals, files = {}, lsof = "", lstart = `${PROC_START}\n` }) {
+// Fake I/O. `terminals` and `screens` are what successive `hc get` and `hc read` calls
+// return; the last one repeats.
+function harness({ terminals = [], screens = [""], files = {}, lsof = "", lstart = `${PROC_START}\n` }) {
   const calls = [];
-  const queue = [...terminals];
+  const gets = [...terminals];
+  const reads = [...screens];
+  const next = (queue) => (queue.length > 1 ? queue.shift() : queue[0]);
   return {
     calls,
     ops: {
       home: "/Users/me",
-      getTerminal: async () => (queue.length > 1 ? queue.shift() : queue[0]),
+      getTerminal: async () => next(gets),
+      readScreen: async (t) => { calls.push(["read", t]); return next(reads); },
       keys: async (t, keys) => { calls.push(["keys", t, ...keys]); },
       send: async (t, text) => { calls.push(["send", t, text]); },
       readFile: async (path) => files[path] ?? null,
@@ -42,6 +64,7 @@ function harness({ terminals, files = {}, lsof = "", lstart = `${PROC_START}\n` 
 }
 
 const CLAUDE_FILE = { "/Users/me/.claude/sessions/200.json": claudeRecord() };
+const sent = (calls) => calls.filter(([name]) => name === "send");
 
 test("checkTarget accepts a local address and refuses none or a remote one", () => {
   assert.equal(checkTarget("t1n"), "t1n");
@@ -71,7 +94,7 @@ test("checkTerminal refuses everything else", () => {
 });
 
 test("claudeSession reads the record Claude keeps for its pid", async () => {
-  const { ops } = harness({ terminals: [], files: CLAUDE_FILE });
+  const { ops } = harness({ files: CLAUDE_FILE });
   assert.equal(await claudeSession(terminal(), ops), CLAUDE_ID);
 });
 
@@ -86,21 +109,13 @@ test("claudeSession refuses a missing, mismatched, reused or malformed record", 
     [{ [path]: claudeRecord({ sessionId: "abc; rm -rf ~" }) }, undefined, /unexpected format/],
   ];
   for (const [files, lstart, message] of cases) {
-    const { ops } = harness({ terminals: [], files, ...(lstart ? { lstart } : {}) });
+    const { ops } = harness({ files, ...(lstart ? { lstart } : {}) });
     await assert.rejects(claudeSession(terminal(), ops), message);
   }
 });
 
 test("rolloutIds reads distinct session IDs from lsof -Fn output", () => {
-  const out = [
-    "p200",
-    "f36",
-    `n/Users/me/.codex/sessions/2026/11/09/rollout-2026-11-09T11-21-15-${CODEX_ID}.jsonl`,
-    "f37",
-    `n/Users/me/.codex/sessions/2026/11/09/rollout-2026-11-09T11-21-15-${CODEX_ID}.jsonl`,
-    "f38",
-    "n/Users/me/.codex/logs_2.sqlite",
-  ].join("\n");
+  const out = ["p200", "f36", rollout(CODEX_ID), "f37", rollout(CODEX_ID), "f38", "n/Users/me/.codex/logs_2.sqlite"].join("\n");
   assert.deepEqual(rolloutIds(out), [CODEX_ID]);
   assert.deepEqual(rolloutIds(""), []);
 });
@@ -113,15 +128,56 @@ test("argvResumeId takes the first UUID after resume", () => {
   assert.equal(argvResumeId(undefined), null);
 });
 
-test("codexSession prefers the open rollout file, then the resume argv, else refuses", async () => {
-  const codex = (argv) => terminal({ app: "codex", fg: { pid: 200, argv } });
-  const rollout = (id) => `n/Users/me/.codex/sessions/2026/11/09/rollout-2026-11-09T11-21-15-${id}.jsonl`;
-  const other = "01a1be20-0136-74b1-ad7b-e045d5339d62";
+test("exitMessageId reads the newest reconnect command right above the prompt", () => {
+  assert.equal(exitMessageId(exitScreen()), CODEX_ID);
+  assert.equal(exitMessageId(`${exitScreen(OTHER_ID)}\n${exitScreen(CODEX_ID)}`), CODEX_ID);
+  assert.equal(exitMessageId(exitScreen(CODEX_ID, ["~/dev/app main", "❯"])), CODEX_ID);
+});
 
-  assert.equal(await codexSession(codex(["codex", "resume", other]), harness({ terminals: [], lsof: rollout(CODEX_ID) }).ops), CODEX_ID);
-  assert.equal(await codexSession(codex(["codex", "resume", CODEX_ID]), harness({ terminals: [] }).ops), CODEX_ID);
-  await assert.rejects(codexSession(codex(["codex"]), harness({ terminals: [], lsof: `${rollout(CODEX_ID)}\n${rollout(other)}` }).ops), /several sessions/);
-  await assert.rejects(codexSession(codex(["codex"]), harness({ terminals: [] }).ops), /--no-daemon/);
+test("exitMessageId refuses an old message, a typed command or no message", () => {
+  // An older exit, then the person started Codex again: Codex printed nothing this time.
+  assert.equal(exitMessageId(exitScreen(OTHER_ID, ["❯ codex", "❯"])), null);
+  assert.equal(exitMessageId(exitScreen(OTHER_ID, ["❯ ls", "a", "b", "c", "❯"])), null);
+  assert.equal(exitMessageId(`❯ codex resume ${CODEX_ID}\n❯`), null);
+  assert.equal(exitMessageId(`  codex resume ${CODEX_ID}\n❯`), null);
+  assert.equal(exitMessageId("❯"), null);
+  assert.equal(exitMessageId(undefined), null);
+});
+
+test("codexPrepare reads the mode and any ID it can before Codex stops", async () => {
+  const prepare = (argv, lsof = "") => codexPrepare(codexTerminal(argv), harness({ lsof }).ops);
+  assert.deepEqual(await prepare(["codex"]), { id: null, noDaemon: false });
+  assert.deepEqual(await prepare(["codex", "resume", CODEX_ID]), { id: CODEX_ID, noDaemon: false });
+  assert.deepEqual(await prepare(["codex", "--no-daemon", "resume", CODEX_ID]), { id: CODEX_ID, noDaemon: true });
+  assert.deepEqual(await prepare(["codex"], rollout(CODEX_ID)), { id: CODEX_ID, noDaemon: true });
+  assert.deepEqual(await prepare(["codex", "resume", OTHER_ID], rollout(CODEX_ID)), { id: CODEX_ID, noDaemon: true });
+});
+
+test("codexPrepare refuses before any key when it can't be sure", async () => {
+  const prepare = (argv, lsof = "") => codexPrepare(codexTerminal(argv), harness({ lsof }).ops);
+  await assert.rejects(prepare(["codex"], `${rollout(CODEX_ID)}\n${rollout(OTHER_ID)}`), /several sessions/);
+  // Without a daemon nothing keeps the session after exit: the ID must be known first.
+  await assert.rejects(prepare(["codex", "--no-daemon"]), /did not show its session ID/);
+});
+
+test("codexConfirm trusts what Codex printed on exit", async () => {
+  const daemon = { id: null, noDaemon: false };
+  assert.equal(await codexConfirm("t1", daemon, harness({ screens: [exitScreen()] }).ops), CODEX_ID);
+  // The session changed inside Codex: the printed ID wins over the argv one.
+  assert.equal(await codexConfirm("t1", { id: OTHER_ID, noDaemon: false }, harness({ screens: [exitScreen()] }).ops), CODEX_ID);
+  assert.equal(await codexConfirm("t1", { id: OTHER_ID, noDaemon: true }, harness({ screens: [exitScreen()] }).ops), CODEX_ID);
+});
+
+test("codexConfirm reads the screen again while the message arrives", async () => {
+  const { calls, ops } = harness({ screens: ["❯", exitScreen()] });
+  assert.equal(await codexConfirm("t1", { id: null, noDaemon: false }, ops), CODEX_ID);
+  assert.deepEqual(calls, [["read", "t1"], ["sleep"], ["read", "t1"]]);
+});
+
+test("codexConfirm without a printed ID: --no-daemon keeps its own, a daemon one refuses", async () => {
+  assert.equal(await codexConfirm("t1", { id: CODEX_ID, noDaemon: true }, harness({ screens: ["❯"] }).ops), CODEX_ID);
+  await assert.rejects(codexConfirm("t1", { id: CODEX_ID, noDaemon: false }, harness({ screens: ["❯"] }).ops), new RegExp(`No resume command was sent.*showed ${CODEX_ID}`));
+  await assert.rejects(codexConfirm("t1", { id: null, noDaemon: false }, harness({ screens: ["❯"] }).ops), /No resume command was sent/);
 });
 
 test("restart presses ctrl+c until the shell is back, then resumes in the same terminal", async () => {
@@ -139,11 +195,29 @@ test("restart presses ctrl+c until the shell is back, then resumes in the same t
   ]);
 });
 
-test("codex resumes with --no-daemon", async () => {
-  const alive = terminal({ app: "codex", fg: { pid: 200, argv: ["codex", "resume", CODEX_ID] } });
-  const { calls, ops } = harness({ terminals: [alive, atPrompt(alive)] });
+test("a daemon-mode Codex resumes the printed session without --no-daemon", async () => {
+  const alive = codexTerminal(["codex"]);
+  const { calls, ops } = harness({ terminals: [alive, atPrompt(alive)], screens: [exitScreen()] });
+  await restartAgent("t1", ops);
+  assert.deepEqual(calls, [
+    ["keys", "t1", "esc"],
+    ["read", "t1"],
+    ["send", "t1", `codex resume ${CODEX_ID}`],
+  ]);
+});
+
+test("a --no-daemon Codex resumes with --no-daemon", async () => {
+  const alive = codexTerminal(["codex", "--no-daemon", "resume", CODEX_ID]);
+  const { calls, ops } = harness({ terminals: [alive, atPrompt(alive)], screens: ["❯"] });
   await restartAgent("t1", ops);
   assert.deepEqual(calls.at(-1), ["send", "t1", `codex resume --no-daemon ${CODEX_ID}`]);
+});
+
+test("a daemon-mode Codex that printed nothing gets no resume command", async () => {
+  const alive = codexTerminal(["codex"]);
+  const { calls, ops } = harness({ terminals: [alive, atPrompt(alive)], screens: ["❯"] });
+  await assert.rejects(restartAgent("t1", ops), /No resume command was sent/);
+  assert.deepEqual(sent(calls), []);
 });
 
 test("guard and session failures send no key", async () => {
@@ -161,7 +235,7 @@ test("guard and session failures send no key", async () => {
 test("an agent that never exits gets no resume command", async () => {
   const { calls, ops } = harness({ terminals: [terminal()], files: CLAUDE_FILE });
   await assert.rejects(restartAgent("t1", ops), /did not exit within 5 seconds/);
-  assert.equal(calls.filter(([name]) => name === "send").length, 0);
+  assert.deepEqual(sent(calls), []);
   assert.equal(calls.filter(([, , key]) => key === "ctrl+c").length, MAX_POLLS);
 });
 
@@ -169,5 +243,5 @@ test("a terminal that ends while stopping gets no resume command", async () => {
   const alive = terminal();
   const { calls, ops } = harness({ terminals: [alive, { ...alive, state: "finished" }], files: CLAUDE_FILE });
   await assert.rejects(restartAgent("t1", ops), /terminal ended/);
-  assert.equal(calls.filter(([name]) => name === "send").length, 0);
+  assert.deepEqual(sent(calls), []);
 });

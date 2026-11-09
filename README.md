@@ -16,7 +16,9 @@ Ask your agent in the Herdr app to add this mod from this repo. Or copy it by ha
 ## Supported
 
 - Claude Code.
-- Codex started with `--no-daemon`, or started as `codex resume <uuid>`.
+- Codex, with or without `--no-daemon`. A daemon-mode Codex prints its reconnect command
+  when it exits; the mod reads it from the screen. Codex restarts are not tested in the
+  app yet.
 - Local terminals only. Tested on macOS only.
 
 How it works, what it reads and runs, and its limits: [RECIPE.md](RECIPE.md).

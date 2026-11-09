@@ -1,10 +1,13 @@
 // The restart sequence. It imports nothing from Herdr, so node can test it:
 // `ops` does all I/O (hc calls, file reads, programs, waiting, progress).
 //
-// Order is the safety rule: every check, including the session ID, passes before
-// the first key goes to the terminal.
+// Order is the safety rule: every check passes before the first key goes to the
+// terminal, and so does the session ID, with one exception: a daemon-mode Codex.
+// Its daemon keeps the session after Codex exits, and Codex prints the reconnect
+// command then, so the ID is read after the exit. If it isn't there, nothing is sent.
 
 import { agentFor } from "./agents.js";
+import { requireSessionId } from "./sessions.js";
 
 export const POLL_MS = 400;
 export const STOP_TIMEOUT_MS = 5_000;
@@ -64,11 +67,15 @@ export async function restartAgent(address, ops) {
   const report = ops.report ?? (() => {});
   const term = await ops.getTerminal(address);
   const agent = checkTerminal(term);
-  const sessionId = await agent.findSession(term, ops);
-  const command = agent.resume(sessionId);
+  const plan = await agent.prepare(term, ops);
 
   report(`Stopping ${agent.label}…`);
   await stopAgent(address, ops);
+
+  if (agent.confirm) report(`Reading what ${agent.label} printed…`);
+  const found = agent.confirm ? await agent.confirm(address, plan, ops) : plan.id;
+  const sessionId = requireSessionId(found, agent.label);
+  const command = agent.resume(sessionId, plan);
 
   report(`Resuming ${agent.label}…`);
   await ops.send(address, command);

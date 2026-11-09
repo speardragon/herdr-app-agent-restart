@@ -2,7 +2,7 @@
 
 Press `cmd+r` on a Claude Code or Codex agent that is waiting for input. A small
 window opens and shows each step. The agent exits, and the same session resumes in the
-same terminal (`claude --resume <id>`, `codex resume --no-daemon <id>`). The window then
+same terminal (`claude --resume <id>`, `codex resume <id>`). The window then
 closes, and the keyboard goes back to that terminal. If a check fails, the window keeps
 the reason until you press any key. Use it when an agent's screen breaks (for example,
 after you connect or disconnect a monitor) or when an agent needs a restart to update.
@@ -45,11 +45,27 @@ This mod is a new build for the Herdr app.
   4. The terminal's own program is a shell (`argv[0]`). If the agent is the terminal's
      own program, exiting it closes the pane.
   5. The agent is in the foreground (`foreground.pid` is not the shell's `pid`).
-  6. The session ID is found and is a UUID.
+  6. The session ID is found and is a UUID. One exception: a daemon-mode Codex (below).
 - Then it presses `esc` once. Then it reads the terminal every 400 ms and presses `ctrl+c`
   until the shell is back in the foreground (`foreground.pid === pid`). It stops after
   5 seconds and sends no resume command.
+- Codex only: it reads the screen (`hc read <t>`) for the reconnect command Codex prints
+  when it exits, up to 8 times, 250 ms apart ("Reading what Codex printed…"). That ID
+  wins over the one found before.
 - Then it types the resume command at the shell prompt and presses Enter (`hc send`).
+- **Daemon-mode Codex** (started without `--no-daemon`): its ID may be unknown before it
+  exits. The shared daemon keeps the session after Codex exits ("Any running work
+  continues"), and Codex prints:
+
+  ```
+  Disconnected from this task. Any running work continues.
+  To reconnect, run:
+    codex resume <uuid>
+  ```
+
+  The mod resumes that ID with `codex resume <uuid>` (no `--no-daemon`: the session lives
+  on in the daemon). If the message is not on the screen, it sends nothing, and the
+  command Codex printed stays on the screen.
 - Success: the window closes and focuses the terminal (`pane.focus {terminal}`).
 - Failure: the window stays. Any key or the Close button closes it and focuses the terminal.
 - While it runs, the window holds the keyboard. Keys go nowhere, and `Esc` does not close it.
@@ -70,15 +86,26 @@ This mod is a new build for the Herdr app.
   `hc`, `exec`, `readTextFile`, `home`. From `gpui-kit`: `View`, `div`, `.frames`.
   From `gpui-base`: `v_flex`, `h_flex`.
 - `hc` commands: `hc get <t> --json`, `hc keys <t> esc`, `hc keys <t> ctrl+c`,
-  `hc send <t> "<resume command>"`.
+  `hc read <t>` (the visible screen), `hc send <t> "<resume command>"`.
+- Each agent in `agents.js` has `prepare(term, ops)` (before any key: what to resume, or
+  an error), an optional `confirm(address, plan, ops)` (after the exit: the final ID) and
+  `resume(id, plan)` (the command).
 - How it finds the session ID:
   - **Claude Code** writes `~/.claude/sessions/<pid>.json` while it runs. The mod reads
     `sessionId` for the foreground pid. The record's `pid` must match, and its `procStart`
     must equal `env LC_ALL=C TZ=UTC ps -o lstart= -p <pid>`, so a stale record with a
     reused pid is refused.
-  - **Codex**: `lsof -nP -p <pid> -Fn`. Exactly one open `…/sessions/…rollout-…-<uuid>.jsonl`
-    gives the ID. Several are refused. With none, the first UUID after `resume` in the
-    process argv (`codex resume <uuid>`) gives the ID. Otherwise it is refused.
+  - **Codex**, before it stops: `lsof -nP -p <pid> -Fn`. Exactly one open
+    `…/sessions/…rollout-…-<uuid>.jsonl` gives the ID and means `--no-daemon`. Several are
+    refused. With none, the first UUID after `resume` in the process argv
+    (`codex resume <uuid>`) gives the ID. `--no-daemon` in the argv also means no daemon.
+    A `--no-daemon` Codex with no ID is refused; a daemon-mode Codex may go on without one.
+  - **Codex**, after it exits: the newest `To reconnect, run:` line, then a line that is
+    only `codex resume <uuid>`. After it, only Codex's "Stop the current turn…" and
+    "Token usage…" lines and at most 3 prompt lines may follow, and none may mention
+    `codex` (an older message is followed by the command that started Codex again).
+    Without it, a `--no-daemon` Codex keeps the ID found before; a daemon-mode Codex
+    gets no resume command.
 - Keys: `keys.json` binds `cmd-r` in `global`.
 - No art, no network.
 
@@ -96,24 +123,35 @@ This mod is a new build for the Herdr app.
   At a shell prompt the two are equal; while a command runs they differ.
 - `procStart` matches `ps -o lstart` only in the C locale and UTC.
 - The session ID goes into a shell command line. Accept only a UUID.
-- **Codex in daemon mode is refused.** The shared Codex daemon holds the rollout file, and
-  the Codex TUI process holds none, so nothing ties the terminal to its session. Start
-  Codex with `--no-daemon` (`hc --skill`: Codex must run with it). The resume command
-  adds `--no-daemon`.
-- Only the session ID comes back (and `--no-daemon` for Codex). Other CLI options (model,
+- **Daemon-mode Codex breaks the "every check first" rule.** The shared daemon holds the
+  rollout file and the Codex TUI process holds none, so nothing ties the terminal to its
+  session before the exit. The ID comes from what Codex prints on exit. The argv ID
+  (`codex resume <uuid>`) can be stale if the session changed inside Codex, so for a
+  daemon-mode Codex it is never used alone.
+- `hc read` right after the exit is untested. If it returns Codex's transcript instead
+  of the shell screen, the reconnect command won't match, and the mod stops without a
+  resume command. The error names the ID Codex showed before it stopped, if any.
+- Keep `RESUME_LINE` strict: a line that is only `codex resume <uuid>`, right after
+  `To reconnect, run:`. A looser pattern would match a prompt line where someone typed
+  the command. A `codex resume --no-daemon <uuid>` line does not match; a `--no-daemon`
+  Codex falls back to the ID it showed before it stopped.
+- Keep Codex's mode on resume. Don't add `--no-daemon` to a daemon-mode session: the
+  daemon still holds it. `hc --skill` says Codex must run with `--no-daemon` in hc.
+- Only the session ID comes back (and `--no-daemon` if Codex had it). Other CLI options (model,
   permission mode, extra folders, inline env vars) do not. A draft in the input box is lost.
 - Grok, Agy and other agents are not supported. No source ties their process to a session
   without guessing. To add one, add an entry to `agents.js` with a `findSession` that
   does not guess.
 - Local terminals only.
 - Tested on macOS only (`ps -o lstart`, `lsof`).
-- Not tested in the app: the Codex `lsof` path, and resuming with `--no-daemon` a session
-  that a daemon-mode Codex started (the `codex resume <uuid>` argv path).
+- Not tested in the app: any Codex restart. That covers reading the exit message with
+  `hc read` right after the exit, the `--no-daemon` `lsof` path, and whether a
+  `--no-daemon` Codex prints the same message.
 
 ## Done when
 
 - `herdr-app check ~/.config/herdr-app/mods/agent-restart` passes.
-- `node --test` in `mods/agent-restart` passes: 13 tests.
+- `node --test` in `mods/agent-restart` passes: 21 tests.
 - `cmd+r` on an idle Claude Code pane: the window shows "Stopping Claude…", Claude exits,
   `claude --resume <id>` runs in the same terminal, the same conversation opens again, and
   the window closes.
@@ -121,4 +159,7 @@ This mod is a new build for the Herdr app.
   - Idle or done Claude: the session ID is found. Claude's record for a running
     conversation holds that conversation's ID.
   - Working Claude: "Claude is working, not idle."
-  - Daemon-mode Codex: "Codex did not show its session ID. Start Codex with --no-daemon, then try again."
+  - Daemon-mode Codex started as `codex resume <uuid>`: the checks pass, and the resume
+    command keeps daemon mode (`codex resume <uuid>`).
+- By hand, outside the mod: `ctrl+c` on a daemon-mode Codex printed the reconnect message
+  above, and `codex resume <uuid>` reopened the same session.

@@ -33,6 +33,8 @@ export function herdrOps(cx, report) {
   return {
     home: home(),
     getTerminal,
+    // The visible screen only (hc read defaults to --lines 0).
+    readScreen: (address) => hcCall(["read", address]),
     keys: (address, keys) => hcCall(["keys", address, ...keys]),
     // hc send pastes the text and presses Enter: at a shell prompt, that runs it.
     send: (address, text) => hcCall(["send", address, text]),
