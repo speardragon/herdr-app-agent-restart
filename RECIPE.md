@@ -25,7 +25,8 @@ This mod is a new build for the Herdr app.
   - After a failure only: "Any key closes", 11 px, `dim`, on the right.
 - **Body**: one line that scrolls if it is long.
   - While it runs: the step in `muted`: "Checking the agent…", "Stopping Claude…",
-    "Resuming Claude…" ("Codex" for Codex).
+    "Resuming Claude…" ("Codex" for Codex). Codex adds "Reading what Codex printed…"
+    before "Resuming Codex…".
   - After a failure: the reason in `foreground`.
 - **Close button** (after a failure only), bottom right: 28 px high, 12 px side padding,
   6 px radius, 1 px `input` border, `raised` background, 12 px text, 0.88 opacity on hover.
@@ -81,7 +82,7 @@ This mod is a new build for the Herdr app.
   - `agents.js`: the agents, keyed by the app name they report (`status.app`):
     `claude-code` and `codex`.
   - `ops.js`: the real I/O, through `hc`, `exec`, `readTextFile` and `home`.
-  - `test/restart.test.mjs`: 13 unit tests.
+  - `test/restart.test.mjs`: 21 unit tests.
 - `herdr` functions: `focused`, `props`, `closeOverlay`, `run("pane.focus")`, `theme`,
   `hc`, `exec`, `readTextFile`, `home`. From `gpui-kit`: `View`, `div`, `.frames`.
   From `gpui-base`: `v_flex`, `h_flex`.
@@ -128,9 +129,10 @@ This mod is a new build for the Herdr app.
   session before the exit. The ID comes from what Codex prints on exit. The argv ID
   (`codex resume <uuid>`) can be stale if the session changed inside Codex, so for a
   daemon-mode Codex it is never used alone.
-- `hc read` right after the exit is untested. If it returns Codex's transcript instead
-  of the shell screen, the reconnect command won't match, and the mod stops without a
-  resume command. The error names the ID Codex showed before it stopped, if any.
+- `hc read` right after the exit gave the shell screen with the reconnect message in the
+  one daemon-mode test on macOS. If it returns Codex's transcript instead, the reconnect
+  command won't match, and the mod stops without a resume command. The error names the
+  ID Codex showed before it stopped, if any.
 - Keep `RESUME_LINE` strict: a line that is only `codex resume <uuid>`, right after
   `To reconnect, run:`. A looser pattern would match a prompt line where someone typed
   the command. A `codex resume --no-daemon <uuid>` line does not match; a `--no-daemon`
@@ -144,9 +146,8 @@ This mod is a new build for the Herdr app.
   does not guess.
 - Local terminals only.
 - Tested on macOS only (`ps -o lstart`, `lsof`).
-- Not tested in the app: any Codex restart. That covers reading the exit message with
-  `hc read` right after the exit, the `--no-daemon` `lsof` path, and whether a
-  `--no-daemon` Codex prints the same message.
+- Not tested in the app: a `--no-daemon` Codex restart. That covers the `lsof` path and
+  whether a `--no-daemon` Codex prints the same message.
 
 ## Done when
 
@@ -155,6 +156,9 @@ This mod is a new build for the Herdr app.
 - `cmd+r` on an idle Claude Code pane: the window shows "Stopping Claude…", Claude exits,
   `claude --resume <id>` runs in the same terminal, the same conversation opens again, and
   the window closes.
+- `cmd+r` on an idle daemon-mode Codex started as `codex resume <uuid>`: Codex exits,
+  `codex resume <uuid>` runs in the same terminal, and the same session opens again. A
+  daemon-mode Codex has no fallback ID, so the resume command came from the exit message.
 - The checks, run on live terminals without sending keys:
   - Idle or done Claude: the session ID is found. Claude's record for a running
     conversation holds that conversation's ID.
