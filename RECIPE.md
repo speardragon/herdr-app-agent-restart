@@ -11,6 +11,9 @@ The idea comes from the Herdr plugin
 [hmu332233/herdr-agent-restart](https://github.com/hmu332233/herdr-agent-restart).
 This mod is a new build for the Herdr app.
 
+`cmd+shift+r` opens a second mod, Agent Restart All. It lists every idle Claude Code and
+Codex agent on this computer, asks once, then restarts them one at a time.
+
 ![Agent Restart](preview.png)
 
 ## What you see
@@ -30,6 +33,14 @@ This mod is a new build for the Herdr app.
   - After a failure: the reason in `foreground`.
 - **Close button** (after a failure only), bottom right: 28 px high, 12 px side padding,
   6 px radius, 1 px `input` border, `raised` background, 12 px text, 0.88 opacity on hover.
+
+- **Agent Restart All**: one window, 480×320 px, same look. The header has `↻` (a spinner
+  while it runs, `!` after a failure), the title, and a hint on the right ("Enter
+  restarts · Esc cancels", then "Any key closes"). Below it: one line ("Restart 8 idle
+  agents? 13 other terminals stay as they are.", then "3/8 t1n: Stopping Codex…", then
+  "7 restarted, 1 failed."), and a list that scrolls: the targets (`t1n  Codex`, with
+  the terminal's place in 11 px `dim`) before the start, the failures with their reasons
+  in the `blocked` color after it.
 
 ## How it behaves
 
@@ -70,6 +81,17 @@ This mod is a new build for the Herdr app.
 - Success: the window closes and focuses the terminal (`pane.focus {terminal}`).
 - Failure: the window stays. Any key or the Close button closes it and focuses the terminal.
 - While it runs, the window holds the keyboard. Keys go nowhere, and `Esc` does not close it.
+- **Agent Restart All** (`cmd+shift+r`):
+  - It reads `hc ls --json`. A target is a terminal on this computer that is live, runs
+    Claude Code or Codex, and is `idle` or `done`. All other terminals are only counted.
+  - It sends nothing until you press Enter. Esc closes the window.
+  - Then it runs the sequence above on each target, one at a time, with every check
+    again. A target that fails (for example, it started working meanwhile) is recorded,
+    and the next one runs.
+  - No failure: the window closes and focuses the terminal that had the focus. Otherwise
+    the window lists the failures until you press any key.
+  - `cmd+shift+r` again while it runs closes the window and cancels the rest. The agent
+    that was stopping then may get no resume command.
 
 ## Built from
 
@@ -82,12 +104,16 @@ This mod is a new build for the Herdr app.
   - `agents.js`: the agents, keyed by the app name they report (`status.app`):
     `claude-code` and `codex`.
   - `ops.js`: the real I/O, through `hc`, `exec`, `readTextFile` and `home`.
-  - `test/restart.test.mjs`: 21 unit tests.
+  - `test/restart.test.mjs`: 24 unit tests.
+- `mods/agent-restart-all/`: `main.js` (its window) and exact copies of `restart.js`,
+  `sessions.js`, `agents.js` and `ops.js`. A mod cannot import from another folder
+  (`herdr-app check` refuses it). A unit test fails if the copies differ.
+  `restart.js` has `planAll` (the targets) and `restartAll` (the loop).
 - `herdr` functions: `focused`, `props`, `closeOverlay`, `run("pane.focus")`, `theme`,
   `hc`, `exec`, `readTextFile`, `home`. From `gpui-kit`: `View`, `div`, `.frames`.
   From `gpui-base`: `v_flex`, `h_flex`.
 - `hc` commands: `hc get <t> --json`, `hc keys <t> esc`, `hc keys <t> ctrl+c`,
-  `hc read <t>` (the visible screen), `hc send <t> "<resume command>"`.
+  `hc read <t>` (the visible screen), `hc send <t> "<resume command>"`, `hc ls --json`.
 - Each agent in `agents.js` has `prepare(term, ops)` (before any key: what to resume, or
   an error), an optional `confirm(address, plan, ops)` (after the exit: the final ID) and
   `resume(id, plan)` (the command).
@@ -107,7 +133,7 @@ This mod is a new build for the Herdr app.
     `codex` (an older message is followed by the command that started Codex again).
     Without it, a `--no-daemon` Codex keeps the ID found before; a daemon-mode Codex
     gets no resume command.
-- Keys: `keys.json` binds `cmd-r` in `global`.
+- Keys: `keys.json` binds `cmd-r` and `cmd-shift-r` in `global`.
 - No art, no network.
 
 ## Watch out
@@ -146,13 +172,17 @@ This mod is a new build for the Herdr app.
   does not guess.
 - Local terminals only.
 - Tested on macOS only (`ps -o lstart`, `lsof`).
+- Change `restart.js`, `sessions.js`, `agents.js` or `ops.js` in `agent-restart`, then
+  copy the file to `agent-restart-all`.
+- Not tested in the app: Agent Restart All. `hc keys`, `hc read` and `hc send` work on a
+  terminal without the focus (tested on a plain shell that ran `cat`).
 - Not tested in the app: a `--no-daemon` Codex restart. That covers the `lsof` path and
   whether a `--no-daemon` Codex prints the same message.
 
 ## Done when
 
-- `herdr-app check ~/.config/herdr-app/mods/agent-restart` passes.
-- `node --test` in `mods/agent-restart` passes: 21 tests.
+- `herdr-app check` passes for `mods/agent-restart` and `mods/agent-restart-all`.
+- `node --test` in `mods/agent-restart` passes: 24 tests.
 - `cmd+r` on an idle Claude Code pane: the window shows "Stopping Claude…", Claude exits,
   `claude --resume <id>` runs in the same terminal, the same conversation opens again, and
   the window closes.

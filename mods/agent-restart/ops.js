@@ -28,11 +28,21 @@ async function getTerminal(address) {
   }
 }
 
+async function listTerminals() {
+  const out = await hcCall(["ls", "--json"]);
+  try {
+    return JSON.parse(out).terminals ?? [];
+  } catch {
+    throw new Error("hc ls did not print JSON.");
+  }
+}
+
 // `cx` must be the AsyncContext of the task that runs the restart.
 export function herdrOps(cx, report) {
   return {
     home: home(),
     getTerminal,
+    listTerminals,
     // The visible screen only (hc read defaults to --lines 0).
     readScreen: (address) => hcCall(["read", address]),
     keys: (address, keys) => hcCall(["keys", address, ...keys]),

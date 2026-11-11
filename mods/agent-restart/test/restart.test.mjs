@@ -1,7 +1,8 @@
 // Run from this mod's folder: node --test
 import assert from "node:assert/strict";
 import test from "node:test";
-import { checkTarget, checkTerminal, restartAgent, MAX_POLLS } from "../restart.js";
+import { readFileSync } from "node:fs";
+import { checkTarget, checkTerminal, planAll, restartAgent, restartAll, MAX_POLLS } from "../restart.js";
 import { argvResumeId, claudeSession, codexConfirm, codexPrepare, exitMessageId, rolloutIds } from "../sessions.js";
 
 const CLAUDE_ID = "9555879a-c76f-47c9-b2f1-1b058d2870e6";
@@ -244,4 +245,50 @@ test("a terminal that ends while stopping gets no resume command", async () => {
   const { calls, ops } = harness({ terminals: [alive, { ...alive, state: "finished" }], files: CLAUDE_FILE });
   await assert.rejects(restartAgent("t1", ops), /terminal ended/);
   assert.deepEqual(sent(calls), []);
+});
+
+test("planAll targets local, live, idle or done Claude and Codex terminals only", () => {
+  const listed = (address, agent, status, state = "live") => ({ address, agent, status, state, where: "ray / work" });
+  const plan = planAll([
+    listed("t1", "claude-code", "idle"),
+    listed("t2", "codex", "done"),
+    listed("t3", "claude-code", "working"),
+    listed("t4", "grok", "idle"),
+    listed("home/t5", "claude-code", "idle"),
+    listed("t6", "claude-code", "idle", "finished"),
+    listed("t7", null, null),
+  ]);
+  assert.deepEqual(plan.targets, [
+    { address: "t1", label: "Claude", where: "ray / work" },
+    { address: "t2", label: "Codex", where: "ray / work" },
+  ]);
+  assert.equal(plan.skipped, 5);
+  assert.deepEqual(planAll(null), { targets: [], skipped: 0 });
+});
+
+test("restartAll goes on after a failure and reports each terminal", async () => {
+  const alive = terminal();
+  const { calls, ops } = harness({
+    terminals: [alive, atPrompt(alive), terminal({ state: "working" }), alive, atPrompt(alive)],
+    files: CLAUDE_FILE,
+  });
+  const reports = [];
+  const targets = ["t1", "t2", "t3"].map((address) => ({ address, label: "Claude", where: "" }));
+  const results = await restartAll(targets, { ...ops, report: (message) => reports.push(message) });
+  assert.deepEqual(results.map((r) => r.ok), [true, false, true]);
+  assert.match(results[1].error, /Claude is working, not idle/);
+  assert.deepEqual(sent(calls), [
+    ["send", "t1", `claude --resume ${CLAUDE_ID}`],
+    ["send", "t3", `claude --resume ${CLAUDE_ID}`],
+  ]);
+  assert.equal(calls.some(([, address]) => address === "t2"), false);
+  assert.equal(reports[0], "1/3 t1: Stopping Claude…");
+});
+
+test("agent-restart-all holds exact copies of the shared modules", () => {
+  for (const name of ["restart.js", "sessions.js", "agents.js", "ops.js"]) {
+    const here = readFileSync(new URL(`../${name}`, import.meta.url), "utf8");
+    const there = readFileSync(new URL(`../../agent-restart-all/${name}`, import.meta.url), "utf8");
+    assert.equal(there, here, name);
+  }
 });

@@ -1,5 +1,6 @@
 {
   "global": {
-    "cmd-r": "mod.open:agent-restart"
+    "cmd-r": "mod.open:agent-restart",
+    "cmd-shift-r": "mod.open:agent-restart-all"
   }
 }

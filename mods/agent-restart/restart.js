@@ -81,3 +81,32 @@ export async function restartAgent(address, ops) {
   await ops.send(address, command);
   return { label: agent.label, sessionId, command };
 }
+
+// Restart All. `terminals` is what `hc ls --json` lists: {address, agent, state, status}.
+// Only local, live, idle or done Claude and Codex terminals are targets; the rest are
+// counted. restartAgent runs every check again on each target before it sends a key.
+export function planAll(terminals) {
+  const list = Array.isArray(terminals) ? terminals : [];
+  const targets = list
+    .filter((t) => typeof t?.address === "string" && !t.address.includes("/"))
+    .filter((t) => t.state === "live" && READY.has(t.status) && agentFor(t.agent))
+    .map((t) => ({ address: t.address, label: agentFor(t.agent).label, where: t.where ?? "" }));
+  return { targets, skipped: list.length - targets.length };
+}
+
+// One at a time, so a failure names one terminal and the others still run.
+export async function restartAll(targets, ops) {
+  const report = ops.report ?? (() => {});
+  const results = [];
+  for (const [index, target] of targets.entries()) {
+    const prefix = `${index + 1}/${targets.length} ${target.address}`;
+    const one = { ...ops, report: (message) => report(`${prefix}: ${message}`) };
+    try {
+      await restartAgent(target.address, one);
+      results.push({ ...target, ok: true });
+    } catch (error) {
+      results.push({ ...target, ok: false, error: error?.message ?? String(error) });
+    }
+  }
+  return results;
+}
