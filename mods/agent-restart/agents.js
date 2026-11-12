@@ -6,7 +6,7 @@
 //   confirm(address, plan, ops)   optional, after the agent exited: the final session ID
 //   resume(id, plan)              the shell command that resumes it
 
-import { claudeSession, codexConfirm, codexPrepare } from "./sessions.js";
+import { claudeSession, codexConfirm, codexPrepare, grokSession } from "./sessions.js";
 
 const AGENTS = {
   "claude-code": {
@@ -20,6 +20,11 @@ const AGENTS = {
     confirm: codexConfirm,
     // Keep the mode it ran in: a daemon-mode session lives on in the daemon.
     resume: (id, plan) => (plan.noDaemon ? `codex resume --no-daemon ${id}` : `codex resume ${id}`),
+  },
+  grok: {
+    label: "Grok",
+    prepare: async (term, ops) => ({ id: await grokSession(term, ops) }),
+    resume: (id) => `grok --resume ${id}`,
   },
 };
 

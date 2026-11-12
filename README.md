@@ -1,6 +1,6 @@
 # Agent Restart for the Herdr app
 
-Press `cmd+r` on an idle Claude Code or Codex agent. The agent exits, and the same
+Press `cmd+r` on an idle Claude Code, Codex or Grok agent. The agent exits, and the same
 session resumes in the same terminal. `cmd+shift+r` does the same for every idle agent,
 one at a time, after you confirm the list.
 
@@ -17,9 +17,11 @@ Ask your agent in the Herdr app to add this mod from this repo. Or copy it by ha
 ## Supported
 
 - Claude Code.
+- Grok. The checks work on live terminals; a Grok restart with `cmd+r` is not tested
+  in the app yet.
 - Codex, with or without `--no-daemon`. A daemon-mode Codex prints its reconnect command
   when it exits; the mod reads it from the screen. A daemon-mode Codex restart is tested
-  in the app. A `--no-daemon` Codex restart is not. Restart All is not tested in the app yet.
+  in the app. A `--no-daemon` Codex restart is not. Restart All was run once in the app.
 - Local terminals only. Tested on macOS only.
 
 How it works, what it reads and runs, and its limits: [RECIPE.md](RECIPE.md).

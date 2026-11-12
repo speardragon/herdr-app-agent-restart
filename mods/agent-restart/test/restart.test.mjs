@@ -3,12 +3,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 import { checkTarget, checkTerminal, planAll, restartAgent, restartAll, MAX_POLLS } from "../restart.js";
-import { argvResumeId, claudeSession, codexConfirm, codexPrepare, exitMessageId, rolloutIds } from "../sessions.js";
+import { argvResumeId, claudeSession, codexConfirm, codexPrepare, exitMessageId, grokSession, lstartSeconds, rolloutIds } from "../sessions.js";
 
 const CLAUDE_ID = "9555879a-c76f-47c9-b2f1-1b058d2870e6";
 const CODEX_ID = "01a1be1c-1936-78a0-afe1-572570b8abc9";
 const OTHER_ID = "01a1be20-0136-74b1-ad7b-e045d5339d62";
 const PROC_START = "Mon Nov  9 01:39:35 2026";
+const GROK_ID = "01a1cd40-7914-7562-a16b-9fb87be8aa46";
+const GROK_START = "Thu Nov 12 00:55:15 2026";
+const GROK_FILE = "/Users/me/.grok/active_sessions.json";
+// What Grok keeps while it runs; pid_start is the process start in microseconds.
+const grokEntry = (overrides = {}) => ({ session_id: GROK_ID, pid: 200, pid_start: 1794444915141436, cwd: "/x", ...overrides });
+const grokFiles = (...entries) => ({ [GROK_FILE]: JSON.stringify(entries) });
 
 // What a daemon-mode Codex prints when ctrl+c disconnects it, then the shell prompt.
 function exitScreen(id = CODEX_ID, after = ["❯"]) {
@@ -84,7 +90,7 @@ test("checkTerminal refuses everything else", () => {
   const cases = [
     [terminal({ live: "finished" }), /not running/],
     [terminal({ app: null }), /No agent/],
-    [terminal({ app: "grok" }), /Unsupported agent: grok/],
+    [terminal({ app: "antigravity" }), /Unsupported agent: antigravity/],
     [terminal({ state: "working" }), /working, not idle/],
     [terminal({ state: "blocked" }), /blocked, not idle/],
     [terminal({ argv: ["claude"] }), /no shell to return to/],
@@ -253,7 +259,7 @@ test("planAll targets local, live, idle or done Claude and Codex terminals only"
     listed("t1", "claude-code", "idle"),
     listed("t2", "codex", "done"),
     listed("t3", "claude-code", "working"),
-    listed("t4", "grok", "idle"),
+    listed("t4", "antigravity", "idle"),
     listed("home/t5", "claude-code", "idle"),
     listed("t6", "claude-code", "idle", "finished"),
     listed("t7", null, null),
@@ -291,4 +297,58 @@ test("agent-restart-all holds exact copies of the shared modules", () => {
     const there = readFileSync(new URL(`../../agent-restart-all/${name}`, import.meta.url), "utf8");
     assert.equal(there, here, name);
   }
+});
+
+test("lstartSeconds reads ps output and refuses anything else", () => {
+  assert.equal(lstartSeconds(`${GROK_START}\n`), 1794444915);
+  assert.equal(lstartSeconds("Mon Nov  9 01:39:35 2026"), Date.UTC(2026, 10, 9, 1, 39, 35) / 1000);
+  assert.equal(lstartSeconds(""), null);
+  assert.equal(lstartSeconds("not a date"), null);
+  assert.equal(lstartSeconds("Thu Foo 12 00:55:15 2026"), null);
+});
+
+test("grokSession reads the entry Grok keeps for its pid", async () => {
+  const other = grokEntry({ pid: 999, session_id: "01a1cd3b-f740-7e51-973d-688f545f226f" });
+  const { ops } = harness({ files: grokFiles(other, grokEntry()), lstart: `${GROK_START}\n` });
+  assert.equal(await grokSession(terminal({ app: "grok" }), ops), GROK_ID);
+});
+
+test("grokSession refuses a missing, ambiguous or stale record", async () => {
+  const term = terminal({ app: "grok" });
+  const cases = [
+    [{}, GROK_START, /did not record a session/],
+    [{ [GROK_FILE]: "{" }, GROK_START, /not valid JSON/],
+    [grokFiles(), GROK_START, /did not record a session/],
+    [grokFiles(grokEntry({ pid: 5 })), GROK_START, /did not record a session/],
+    [{ [GROK_FILE]: "{}" }, GROK_START, /did not record a session/],
+    [grokFiles(grokEntry(), grokEntry({ session_id: "01a1cd3b-f740-7e51-973d-688f545f226f" })), GROK_START, /several sessions/],
+    [grokFiles(grokEntry({ pid_start: undefined })), GROK_START, /does not match/],
+    [grokFiles(grokEntry()), "Thu Nov 12 00:50:15 2026", /earlier process/],
+    [grokFiles(grokEntry()), "", /earlier process/],
+    [grokFiles(grokEntry({ session_id: "x; rm -rf ~" })), GROK_START, /unexpected format/],
+  ];
+  for (const [files, lstart, message] of cases) {
+    const { ops } = harness({ files, lstart: `${lstart}\n` });
+    await assert.rejects(grokSession(term, ops), message);
+  }
+});
+
+test("grokSession allows the one second ps rounds off", async () => {
+  const { ops } = harness({ files: grokFiles(grokEntry()), lstart: "Thu Nov 12 00:55:16 2026\n" });
+  assert.equal(await grokSession(terminal({ app: "grok" }), ops), GROK_ID);
+});
+
+test("restart resumes a Grok session with grok --resume", async () => {
+  const alive = terminal({ app: "grok" });
+  const { calls, ops } = harness({ terminals: [alive, alive, atPrompt(alive)], files: grokFiles(grokEntry()), lstart: `${GROK_START}\n` });
+  const result = await restartAgent("t1", ops);
+  assert.equal(result.command, `grok --resume ${GROK_ID}`);
+  assert.deepEqual(sent(calls), [["send", "t1", `grok --resume ${GROK_ID}`]]);
+  assert.deepEqual(calls.filter(([name]) => name === "keys").map(([, , key]) => key), ["esc", "ctrl+c"]);
+});
+
+test("a Grok record problem sends no key", async () => {
+  const { calls, ops } = harness({ terminals: [terminal({ app: "grok" })], files: grokFiles(), lstart: `${GROK_START}\n` });
+  await assert.rejects(restartAgent("t1", ops), /did not record a session/);
+  assert.deepEqual(calls, []);
 });

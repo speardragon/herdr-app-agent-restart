@@ -38,6 +38,38 @@ export async function claudeSession(term, ops) {
   return requireSessionId(record.sessionId, "Claude");
 }
 
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// `ps -o lstart` in the C locale and UTC ("Thu Nov 12 00:55:15 2026") as epoch seconds.
+export function lstartSeconds(text) {
+  const m = /^\s*\w{3}\s+(\w{3})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})\s+(\d{4})\s*$/.exec(String(text ?? ""));
+  const month = m ? MONTHS.indexOf(m[1]) : -1;
+  if (month < 0) return null;
+  return Date.UTC(Number(m[6]), month, Number(m[2]), Number(m[3]), Number(m[4]), Number(m[5])) / 1000;
+}
+
+// Grok keeps ~/.grok/active_sessions.json while it runs: one entry per process, with the
+// session ID, the pid and the process start in microseconds since the epoch. The entry
+// goes when Grok exits. A pid that was reused has a different start, so it is refused.
+export async function grokSession(term, ops) {
+  const pid = term.foreground.pid;
+  const text = await ops.readFile(`${ops.home}/.grok/active_sessions.json`);
+  if (!text) throw new Error("Grok did not record a session for this process.");
+  const entries = parseRecord(text, "Grok's session list");
+  const mine = (Array.isArray(entries) ? entries : []).filter((entry) => entry?.pid === pid);
+  if (mine.length === 0) throw new Error("Grok did not record a session for this process.");
+  if (mine.length > 1) throw new Error("Grok recorded several sessions for this process. Restart it by hand.");
+  const [entry] = mine;
+  if (!Number.isFinite(entry.pid_start)) throw new Error("Grok's session record does not match this process.");
+  const started = await ops.exec("env", ["LC_ALL=C", "TZ=UTC", "ps", "-o", "lstart=", "-p", String(pid)]);
+  const actual = started.code === 0 ? lstartSeconds(started.stdout) : null;
+  // ps rounds down to a second.
+  if (actual === null || Math.abs(actual - Math.floor(entry.pid_start / 1e6)) > 1) {
+    throw new Error("Grok's session record belongs to an earlier process.");
+  }
+  return requireSessionId(entry.session_id, "Grok");
+}
+
 // Session IDs in the rollout files a process holds open (`lsof -Fn` lines start with "n").
 export function rolloutIds(lsofOutput) {
   const ids = String(lsofOutput ?? "")
