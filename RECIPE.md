@@ -1,8 +1,8 @@
 # Agent Restart
 
-Press `cmd+r` on a Claude Code, Codex or Grok agent that is waiting for input. A small
+Press `cmd+r` on a Claude Code, Codex, Grok or Antigravity agent that is waiting for input. A small
 window opens and shows each step. The agent exits, and the same session resumes in the
-same terminal (`claude --resume <id>`, `codex resume <id>`, `grok --resume <id>`). The window then
+same terminal (`claude --resume <id>`, `codex resume <id>`, `grok --resume <id>`, `agy --conversation=<id>`). The window then
 closes, and the keyboard goes back to that terminal. If a check fails, the window keeps
 the reason until you press any key. Use it when an agent's screen breaks (for example,
 after you connect or disconnect a monitor) or when an agent needs a restart to update.
@@ -11,8 +11,8 @@ The idea comes from the Herdr plugin
 [hmu332233/herdr-agent-restart](https://github.com/hmu332233/herdr-agent-restart).
 This mod is a new build for the Herdr app.
 
-`cmd+shift+r` opens a second mod, Agent Restart All. It lists every idle Claude Code, Codex
-and Grok agent on this computer, asks once, then restarts them one at a time.
+`cmd+shift+r` opens a second mod, Agent Restart All. It lists every idle Claude Code, Codex,
+Grok and Antigravity agent on this computer, asks once, then restarts them one at a time.
 
 ![Agent Restart](preview.png)
 
@@ -28,7 +28,7 @@ and Grok agent on this computer, asks once, then restarts them one at a time.
   - After a failure only: "Any key closes", 11 px, `dim`, on the right.
 - **Body**: one line that scrolls if it is long.
   - While it runs: the step in `muted`: "Checking the agent…", "Stopping Claude…",
-    "Resuming Claude…" ("Codex", "Grok" for those agents). Codex adds "Reading what Codex printed…"
+    "Resuming Claude…" ("Codex", "Grok", "Antigravity" for those agents). Codex adds "Reading what Codex printed…"
     before "Resuming Codex…".
   - After a failure: the reason in `foreground`.
 - **Close button** (after a failure only), bottom right: 28 px high, 12 px side padding,
@@ -52,7 +52,7 @@ and Grok agent on this computer, asks once, then restarts them one at a time.
 - These checks all pass before the first key goes to the terminal. If one fails, the
   terminal gets no input:
   1. A terminal is focused, and it is on this computer (not `machine/t7`).
-  2. The terminal reports an agent, and the agent is Claude Code, Codex or Grok.
+  2. The terminal reports an agent, and the agent is Claude Code, Codex, Grok or Antigravity.
   3. The status is `idle` or `done`.
   4. The terminal's own program is a shell (`argv[0]`). If the agent is the terminal's
      own program, exiting it closes the pane.
@@ -83,7 +83,7 @@ and Grok agent on this computer, asks once, then restarts them one at a time.
 - While it runs, the window holds the keyboard. Keys go nowhere, and `Esc` does not close it.
 - **Agent Restart All** (`cmd+shift+r`):
   - It reads `hc ls --json`. A target is a terminal on this computer that is live, runs
-    Claude Code, Codex or Grok, and is `idle` or `done`. All other terminals are only counted.
+    Claude Code, Codex, Grok or Antigravity, and is `idle` or `done`. All other terminals are only counted.
   - It sends nothing until you press Enter. Esc closes the window.
   - Then it runs the sequence above on each target, one at a time, with every check
     again. A target that fails (for example, it started working meanwhile) is recorded,
@@ -102,9 +102,9 @@ and Grok agent on this computer, asks once, then restarts them one at a time.
     `herdr`, so `node --test` can test it with fake I/O.
   - `sessions.js`: finds the session ID.
   - `agents.js`: the agents, keyed by the app name they report (`status.app`):
-    `claude-code`, `codex` and `grok`.
+    `claude-code`, `codex`, `grok` and `antigravity`.
   - `ops.js`: the real I/O, through `hc`, `exec`, `readTextFile` and `home`.
-  - `test/restart.test.mjs`: 30 unit tests.
+  - `test/restart.test.mjs`: 35 unit tests.
 - `mods/agent-restart-all/`: `main.js` (its window) and exact copies of `restart.js`,
   `sessions.js`, `agents.js` and `ops.js`. A mod cannot import from another folder
   (`herdr-app check` refuses it). A unit test fails if the copies differ.
@@ -172,18 +172,31 @@ and Grok agent on this computer, asks once, then restarts them one at a time.
     `env LC_ALL=C TZ=UTC ps -o lstart= -p <pid>`, so a stale entry with a reused pid is
     refused. Grok removes its entry when it exits, so the mod reads it before it stops
     Grok.
+  - **Antigravity** (`agy`) opens `~/.gemini/antigravity-cli/conversations/<uuid>.db` when
+    a conversation starts and holds it while it runs. The mod runs `lsof -nP -p <pid> -Fn`
+    and takes the one `<uuid>.db` (the `-wal` and `-shm` files beside it do not count). None
+    means no message was sent yet: it refuses, since there is nothing to resume. Two are
+    refused. The ID is the same as the `conversation_id` in the statusline JSON.
 - Only the session ID comes back (and `--no-daemon` if Codex had it). Other CLI options (model,
   permission mode, extra folders, inline env vars) do not. A draft in the input box is lost.
 - Grok quits on a second `ctrl+c` (its default; `ui.single_ctrl_c_quit` changes that). The
   stop loop presses `ctrl+c` until the shell is back, so both settings work. A resumed
   Grok does not get options such as `--always-approve` or `--model` back.
-- Agy and other agents are not supported. No source ties their process to a session
+- Antigravity quits on a second `ctrl+c` and prints `agy --conversation=<id>`. The mod
+  does not read that message: the `lsof` result is already exact. `~/.gemini/antigravity-cli/.last-statusline.json`
+  also holds a `conversation_id`, but all `agy` processes share that file, so the mod
+  does not use it.
+- Other agents are not supported. No source ties their process to a session
   without guessing. To add one, add an entry to `agents.js` whose `prepare` does not
   guess.
 - Local terminals only.
 - Tested on macOS only (`ps -o lstart`, `lsof`).
 - Change `restart.js`, `sessions.js`, `agents.js` or `ops.js` in `agent-restart`, then
   copy the file to `agent-restart-all`.
+- Not tested in the app: an Antigravity restart with `cmd+r`. On a throwaway terminal,
+  outside the mod, `lsof` showed the conversation database after the first message,
+  `ctrl+c` twice quit `agy`, and `agy --conversation=<id>` opened the same conversation
+  with its history. The checks on a live `agy` terminal were not run: none was open.
 - Not tested in the app: a Grok restart with `cmd+r`. On a throwaway terminal, outside the
   mod, `ctrl+c` twice quit Grok, and `grok --resume <id>` opened the same session ID
   again. Agent Restart All was run once in the app; it was not run on every agent.
@@ -195,7 +208,7 @@ and Grok agent on this computer, asks once, then restarts them one at a time.
 ## Done when
 
 - `herdr-app check` passes for `mods/agent-restart` and `mods/agent-restart-all`.
-- `node --test` in `mods/agent-restart` passes: 30 tests.
+- `node --test` in `mods/agent-restart` passes: 35 tests.
 - `cmd+r` on an idle Claude Code pane: the window shows "Stopping Claude…", Claude exits,
   `claude --resume <id>` runs in the same terminal, the same conversation opens again, and
   the window closes.

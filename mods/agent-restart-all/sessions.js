@@ -80,6 +80,30 @@ export function rolloutIds(lsofOutput) {
   return [...new Set(ids)];
 }
 
+const CONVERSATION = new RegExp(`/antigravity-cli/conversations/(${UUID_PATTERN})\\.db$`, "i");
+
+// Conversation IDs in the database files a process holds open (`lsof -Fn` "n" lines).
+// The `-wal` and `-shm` files beside a database are not counted.
+export function conversationIds(lsofOutput) {
+  const ids = String(lsofOutput ?? "")
+    .split("\n")
+    .filter((line) => line.startsWith("n"))
+    .map((line) => CONVERSATION.exec(line.slice(1))?.[1]?.toLowerCase())
+    .filter(Boolean);
+  return [...new Set(ids)];
+}
+
+// Antigravity opens ~/.gemini/antigravity-cli/conversations/<uuid>.db when a conversation
+// starts and holds it while it runs, so lsof ties the process to its conversation. Before
+// the first message there is none: nothing to resume. Two are refused, not guessed.
+export async function antigravitySession(term, ops) {
+  const open = await ops.exec("lsof", ["-nP", "-p", String(term.foreground.pid), "-Fn"]);
+  const ids = conversationIds(open.stdout);
+  if (ids.length === 0) throw new Error("Antigravity has no conversation yet. There is nothing to resume.");
+  if (ids.length > 1) throw new Error("Antigravity has several conversations open. Restart it by hand.");
+  return requireSessionId(ids[0], "Antigravity");
+}
+
 // `codex resume <id>`: the first UUID after "resume", past any options.
 export function argvResumeId(argv) {
   const list = Array.isArray(argv) ? argv : [];

@@ -3,12 +3,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 import { checkTarget, checkTerminal, planAll, restartAgent, restartAll, MAX_POLLS } from "../restart.js";
-import { argvResumeId, claudeSession, codexConfirm, codexPrepare, exitMessageId, grokSession, lstartSeconds, rolloutIds } from "../sessions.js";
+import { antigravitySession, argvResumeId, claudeSession, conversationIds, codexConfirm, codexPrepare, exitMessageId, grokSession, lstartSeconds, rolloutIds } from "../sessions.js";
 
 const CLAUDE_ID = "9555879a-c76f-47c9-b2f1-1b058d2870e6";
 const CODEX_ID = "01a1be1c-1936-78a0-afe1-572570b8abc9";
 const OTHER_ID = "01a1be20-0136-74b1-ad7b-e045d5339d62";
 const PROC_START = "Mon Nov  9 01:39:35 2026";
+const AGY_ID = "79043854-fe5b-4674-a7e6-4df7a30a31ec";
+const AGY_OTHER = "c30bdae9-19a1-481c-9c5a-79889a251d1e";
+const AGY_DIR = "/Users/me/.gemini/antigravity-cli";
+const conversation = (id, suffix = ".db") => `n${AGY_DIR}/conversations/${id}${suffix}`;
 const GROK_ID = "01a1cd40-7914-7562-a16b-9fb87be8aa46";
 const GROK_START = "Thu Nov 12 00:55:15 2026";
 const GROK_FILE = "/Users/me/.grok/active_sessions.json";
@@ -90,7 +94,7 @@ test("checkTerminal refuses everything else", () => {
   const cases = [
     [terminal({ live: "finished" }), /not running/],
     [terminal({ app: null }), /No agent/],
-    [terminal({ app: "antigravity" }), /Unsupported agent: antigravity/],
+    [terminal({ app: "opencode" }), /Unsupported agent: opencode/],
     [terminal({ state: "working" }), /working, not idle/],
     [terminal({ state: "blocked" }), /blocked, not idle/],
     [terminal({ argv: ["claude"] }), /no shell to return to/],
@@ -259,7 +263,7 @@ test("planAll targets local, live, idle or done Claude and Codex terminals only"
     listed("t1", "claude-code", "idle"),
     listed("t2", "codex", "done"),
     listed("t3", "claude-code", "working"),
-    listed("t4", "antigravity", "idle"),
+    listed("t4", "opencode", "idle"),
     listed("home/t5", "claude-code", "idle"),
     listed("t6", "claude-code", "idle", "finished"),
     listed("t7", null, null),
@@ -350,5 +354,49 @@ test("restart resumes a Grok session with grok --resume", async () => {
 test("a Grok record problem sends no key", async () => {
   const { calls, ops } = harness({ terminals: [terminal({ app: "grok" })], files: grokFiles(), lstart: `${GROK_START}\n` });
   await assert.rejects(restartAgent("t1", ops), /did not record a session/);
+  assert.deepEqual(calls, []);
+});
+
+test("conversationIds counts each database once and skips other files", () => {
+  const out = [
+    `n${AGY_DIR}/conversation_summaries.db`,
+    `n${AGY_DIR}/brain/${AGY_ID}`,
+    conversation(AGY_ID),
+    conversation(AGY_ID, ".db-wal"),
+    conversation(AGY_ID, ".db-shm"),
+    `n/other/antigravity-cli/conversations/${AGY_OTHER}.db`,
+    `p123`,
+  ].join("\n");
+  assert.deepEqual(conversationIds(out), [AGY_ID, AGY_OTHER]);
+  assert.deepEqual(conversationIds(""), []);
+  assert.deepEqual(conversationIds(undefined), []);
+});
+
+test("antigravitySession reads the one conversation the process holds open", async () => {
+  const { ops } = harness({ lsof: [conversation(AGY_ID), conversation(AGY_ID, ".db-wal")].join("\n") });
+  assert.equal(await antigravitySession(terminal({ app: "antigravity", fg: { pid: 200, argv: ["agy"] } }), ops), AGY_ID);
+});
+
+test("antigravitySession refuses no conversation and several", async () => {
+  const term = terminal({ app: "antigravity" });
+  const none = harness({ lsof: `n${AGY_DIR}/conversation_summaries.db` });
+  await assert.rejects(antigravitySession(term, none.ops), /no conversation yet/);
+  const two = harness({ lsof: [conversation(AGY_ID), conversation(AGY_OTHER)].join("\n") });
+  await assert.rejects(antigravitySession(term, two.ops), /several conversations/);
+});
+
+test("restart resumes an Antigravity conversation with agy --conversation", async () => {
+  const alive = terminal({ app: "antigravity", fg: { pid: 200, argv: ["agy"] } });
+  const { calls, ops } = harness({ terminals: [alive, alive, atPrompt(alive)], lsof: conversation(AGY_ID) });
+  const result = await restartAgent("t1", ops);
+  assert.equal(result.label, "Antigravity");
+  assert.equal(result.command, `agy --conversation=${AGY_ID}`);
+  assert.deepEqual(sent(calls), [["send", "t1", `agy --conversation=${AGY_ID}`]]);
+  assert.deepEqual(calls.filter(([name]) => name === "keys").map(([, , key]) => key), ["esc", "ctrl+c"]);
+});
+
+test("an Antigravity with no conversation sends no key", async () => {
+  const { calls, ops } = harness({ terminals: [terminal({ app: "antigravity" })], lsof: "" });
+  await assert.rejects(restartAgent("t1", ops), /no conversation yet/);
   assert.deepEqual(calls, []);
 });

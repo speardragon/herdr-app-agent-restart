@@ -6,7 +6,7 @@
 //   confirm(address, plan, ops)   optional, after the agent exited: the final session ID
 //   resume(id, plan)              the shell command that resumes it
 
-import { claudeSession, codexConfirm, codexPrepare, grokSession } from "./sessions.js";
+import { antigravitySession, claudeSession, codexConfirm, codexPrepare, grokSession } from "./sessions.js";
 
 const AGENTS = {
   "claude-code": {
@@ -25,6 +25,11 @@ const AGENTS = {
     label: "Grok",
     prepare: async (term, ops) => ({ id: await grokSession(term, ops) }),
     resume: (id) => `grok --resume ${id}`,
+  },
+  antigravity: {
+    label: "Antigravity",
+    prepare: async (term, ops) => ({ id: await antigravitySession(term, ops) }),
+    resume: (id) => `agy --conversation=${id}`,
   },
 };
 
